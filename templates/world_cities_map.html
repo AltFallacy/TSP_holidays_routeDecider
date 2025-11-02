@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TSP Solver</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        #map {
+            height: 100vh;
+            width: 100%;
+        }
+
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            width: 350px;
+            max-height: calc(100vh - 20px);
+            overflow-y: auto;
+        }
+        
+        .leaflet-popup-content-wrapper {
+            border-radius: 8px;
+        }
+        .leaflet-popup-content {
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="map"></div>
+
+    <div id="controls" class="bg-white p-4 rounded-2xl shadow-2xl flex flex-col space-y-4">
+        
+        <h1 class="text-xl font-bold text-gray-800 text-center">TSP Solver</h1>
+        
+        <div>
+            <label for="city-search" class="block text-sm font-medium text-gray-700">Add City by Name</label>
+            <div class="mt-1 flex rounded-md shadow-sm">
+                <input type="text" id="city-search" class="flex-1 min-w-0 block w-full px-3 py-2 rounded-none rounded-l-md focus:ring-indigo-500 focus:border-indigo-500 border-gray-300" placeholder="e.g., Paris">
+                <button id="add-city-button" type="button" class="-ml-px relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-r-md text-gray-700 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
+                    Add
+                </button>
+            </div>
+            <p class="mt-1 text-xs text-gray-500">Or click directly on the map to add a point.</p>
+        </div>
+        
+        <div>
+            <h2 class="text-md font-semibold text-gray-700">Selected Points (<span id="point-count">0</span>/15)</h2>
+            <ul id="points-list" class="mt-2 h-40 overflow-y-auto bg-gray-50 border border-gray-200 rounded-md divide-y divide-gray-200">
+                <li class="p-3 text-gray-500 text-sm">No points added yet.</li>
+            </ul>
+        </div>
+        
+        <div class="flex flex-col space-y-2">
+            <button id="solve-button" class="w-full bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-all duration-200">
+                Solve TSP
+            </button>
+            <button id="clear-button" class="w-full bg-red-500 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-all duration-200">
+                Clear All Points
+            </button>
+        </div>
+        
+        <div>
+            <h2 class="text-md font-semibold text-gray-700">Result:</h2>
+            <div id="result" class="mt-2 p-3 bg-gray-50 rounded-md text-sm text-gray-700 min-h-[50px]">
+                Add at least 2 points to solve.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let map;
+        let markersLayer = L.layerGroup();
+        let pathLayer = L.layerGroup();
+        
+        const API_BASE_URL = 'http://127.0.0.1:5000';
+
+        const pointsList = document.getElementById('points-list');
+        const pointCount = document.getElementById('point-count');
+        const resultDiv = document.getElementById('result');
+        const citySearchInput = document.getElementById('city-search');
+        const addCityButton = document.getElementById('add-city-button');
+        const solveButton = document.getElementById('solve-button');
+        const clearButton = document.getElementById('clear-button');
+        
+        function initMap() {
+            map = L.map('map').setView([20, 0], 2);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+
+            map.addLayer(markersLayer);
+            map.addLayer(pathLayer);
+            
+            map.on('click', onMapClick);
+        }
+
+        function updatePointsList(points) {
+            pointsList.innerHTML = '';
+            if (points.length === 0) {
+                pointsList.innerHTML = '<li class="p-3 text-gray-500 text-sm">No points added yet.</li>';
+            } else {
+                points.forEach((point, index) => {
+                    const li = document.createElement('li');
+                    li.className = 'p-3 text-sm text-gray-800';
+                    li.textContent = `${index + 1}. ${point[0]} (${point[1].toFixed(2)}, ${point[2].toFixed(2)})`;
+                    pointsList.appendChild(li);
+                });
+            }
+            pointCount.textContent = points.length;
+        }
+        
+        function addMarker(name, lat, lon) {
+            const marker = L.marker([lat, lon]).bindPopup(name);
+            markersLayer.addLayer(marker);
+        }
+        
+        function drawPath(route) {
+            pathLayer.clearLayers();
+            if (route.length < 2) return;
+
+            const latLngs = route.map(point => [point[1], point[2]]);
+            
+            latLngs.push([route[0][1], route[0][2]]); 
+            
+            const polyline = L.polyline(latLngs, {
+                color: 'blue',
+                weight: 3,
+                opacity: 0.7
+            });
+            pathLayer.addLayer(polyline);
+            
+            map.fitBounds(polyline.getBounds().pad(0.1));
+        }
+
+        async function addPoint(name, lat, lon) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/add_point`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, lat, lon })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    addMarker(name, lat, lon);
+                    updatePointsList(data.points);
+                } else {
+                    alert(data.message);
+                }
+            } catch (error) {
+                console.error('Error adding point:', error);
+                alert(`Error adding point: ${error.message}`);
+            }
+        }
+        
+        addCityButton.addEventListener('click', async () => {
+            const cityName = citySearchInput.value;
+            if (!cityName) return;
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/get_city_coords?city=${encodeURIComponent(cityName)}`);
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    addPoint(data.name, data.lat, data.lon);
+                    citySearchInput.value = '';
+                } else {
+                    alert(data.message);
+                }
+            } catch (error) {
+                console.error('Error fetching city:', error);
+                alert('Could not fetch city. Is the server running?');
+            }
+        });
+        
+        citySearchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                addCityButton.click();
+            }
+        });
+
+        function onMapClick(e) {
+            const lat = e.latlng.lat;
+            const lon = e.latlng.lng;
+            const name = `Custom Point (${lat.toFixed(2)}, ${lon.toFixed(2)})`;
+            addPoint(name, lat, lon);
+        }
+
+        solveButton.addEventListener('click', async () => {
+            resultDiv.innerHTML = 'Solving...';
+            pathLayer.clearLayers();
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/solve_tsp`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    resultDiv.textContent = data.error;
+                } else {
+                    resultDiv.innerHTML = `
+                        <p><strong>Total Distance:</strong> ${data.cost.toFixed(2)} km</p>
+                        <p><strong>Path:</strong> ${data.route.map(p => p[0]).join(' &rarr; ')}</p>
+                    `;
+                    drawPath(data.route);
+                }
+            } catch (error) {
+                console.error('Error solving TSP:', error);
+                resultDiv.textContent = 'Error solving. See console for details.';
+            }
+        });
+
+        clearButton.addEventListener('click', async () => {
+            try {
+                const response = await fetch(`${API_BASE_URL}/clear_points`, { method: 'POST' });
+                const data = await response.json();
+                
+                updatePointsList(data.points || []);
+                markersLayer.clearLayers();
+                pathLayer.clearLayers();
+                resultDiv.textContent = 'Add at least 2 points to solve.';
+            } catch (error) {
+                console.error('Error clearing points:', error);
+            }
+        });
+        
+        document.addEventListener('DOMContentLoaded', initMap);
+
+    </script>
+</body>
+</html>
